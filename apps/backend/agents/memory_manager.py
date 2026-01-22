@@ -2,11 +2,18 @@
 Memory Management for Agent System
 ===================================
 
-Handles session memory storage using dual-layer approach:
+Handles session memory storage using multi-layer approach:
 - PRIMARY: Graphiti (when enabled) - semantic search, cross-session context
+- SECONDARY: VISION VectorDB (DMI) - cross-project learnings, patterns, protocols
 - FALLBACK: File-based memory - zero dependencies, always available
+
+VISION Integration:
+- Queries DMI's Pinecone VectorDB for relevant learnings
+- Uses x-dmi-secret header for authentication (ADR-021 RIGID)
+- Runs in parallel with Graphiti for combined context
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -239,6 +246,162 @@ async def get_graphiti_context(
                     "Failed to close Graphiti memory connection", exc_info=True
                 )
 
+
+
+
+async def get_vision_context(subtask: dict) -> str | None:
+    """
+    Retrieve relevant context from VISION VectorDB for the current subtask.
+
+    VISION contains cross-project learnings, patterns, and protocols from the
+    DMI knowledge base. This supplements Graphiti's project-specific memory.
+
+    Args:
+        subtask: The current subtask being worked on
+
+    Returns:
+        Formatted context string or None if unavailable
+    """
+    if is_debug_enabled():
+        debug(
+            "memory",
+            "Retrieving VISION context for subtask",
+            subtask_id=subtask.get("id", "unknown"),
+            subtask_desc=subtask.get("description", "")[:100],
+        )
+
+    try:
+        from vision_client import get_vision_context as vision_query, is_vision_enabled
+
+        if not is_vision_enabled():
+            if is_debug_enabled():
+                debug("memory", "VISION not enabled (no DMI_SECRET), skipping")
+            return None
+
+        subtask_desc = subtask.get("description", "")
+        if not subtask_desc:
+            if is_debug_enabled():
+                debug_warning("memory", "Empty subtask description, skipping VISION")
+            return None
+
+        if is_debug_enabled():
+            debug_detailed(
+                "memory",
+                "Querying VISION VectorDB",
+                query=subtask_desc[:200],
+                namespaces=["learnings", "skills", "protocols"],
+            )
+
+        # Query VISION
+        context = await vision_query(
+            subtask_desc,
+            namespaces=["learnings", "skills", "protocols"],
+            top_k=5,
+        )
+
+        if context:
+            if is_debug_enabled():
+                debug_success(
+                    "memory",
+                    "VISION context retrieved",
+                    context_length=len(context),
+                )
+        else:
+            if is_debug_enabled():
+                debug("memory", "No relevant VISION context found")
+
+        return context
+
+    except ImportError:
+        logger.debug("vision_client not available")
+        if is_debug_enabled():
+            debug_warning("memory", "vision_client module not found")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to get VISION context: {e}")
+        if is_debug_enabled():
+            debug_error("memory", "VISION query failed", error=str(e))
+        return None
+
+
+async def get_combined_context(
+    spec_dir: Path,
+    project_dir: Path,
+    subtask: dict,
+) -> str | None:
+    """
+    Retrieve combined context from both Graphiti and VISION in parallel.
+
+    This function queries both memory systems concurrently and combines
+    their results for richer agent context.
+
+    Args:
+        spec_dir: Spec directory
+        project_dir: Project root directory
+        subtask: The current subtask being worked on
+
+    Returns:
+        Combined formatted context string or None if both unavailable
+    """
+    if is_debug_enabled():
+        debug_section("memory", "Combined Context Retrieval")
+        debug(
+            "memory",
+            "Starting parallel context retrieval",
+            subtask_id=subtask.get("id", "unknown"),
+        )
+
+    # Run both queries in parallel using asyncio.gather
+    graphiti_task = get_graphiti_context(spec_dir, project_dir, subtask)
+    vision_task = get_vision_context(subtask)
+
+    graphiti_context, vision_context = await asyncio.gather(
+        graphiti_task,
+        vision_task,
+        return_exceptions=True,  # Don't fail if one system errors
+    )
+
+    # Handle exceptions from gather
+    if isinstance(graphiti_context, Exception):
+        logger.warning(f"Graphiti context failed: {graphiti_context}")
+        graphiti_context = None
+    if isinstance(vision_context, Exception):
+        logger.warning(f"VISION context failed: {vision_context}")
+        vision_context = None
+
+    if is_debug_enabled():
+        debug(
+            "memory",
+            "Parallel retrieval complete",
+            graphiti_available=graphiti_context is not None,
+            vision_available=vision_context is not None,
+        )
+
+    # Combine contexts
+    combined_parts = []
+
+    if graphiti_context:
+        combined_parts.append(graphiti_context)
+
+    if vision_context:
+        combined_parts.append(vision_context)
+
+    if not combined_parts:
+        if is_debug_enabled():
+            debug("memory", "No context available from either system")
+        return None
+
+    combined = "\n\n---\n\n".join(combined_parts)
+
+    if is_debug_enabled():
+        debug_success(
+            "memory",
+            "Combined context assembled",
+            total_length=len(combined),
+            sources=len(combined_parts),
+        )
+
+    return combined
 
 async def save_session_memory(
     spec_dir: Path,
