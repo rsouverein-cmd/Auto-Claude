@@ -153,10 +153,11 @@ async def get_vision_context(
     Get formatted context from VISION for a subtask.
 
     Queries multiple namespaces and formats results for agent consumption.
+    Supports all 8 ADR-023 namespaces for comprehensive knowledge retrieval.
 
     Args:
         subtask_description: Description of the current subtask
-        namespaces: List of namespaces to query (default: learnings, skills, protocols)
+        namespaces: List of namespaces to query (default: all 8 namespaces)
         top_k: Results per namespace
 
     Returns:
@@ -165,7 +166,11 @@ async def get_vision_context(
     if not is_vision_enabled():
         return None
 
-    namespaces = namespaces or ["learnings", "skills", "protocols"]
+    # All 8 ADR-023 namespaces (internal + external)
+    namespaces = namespaces or [
+        "learnings", "skills", "protocols", "templates", "errors",
+        "external-docs", "research", "usage"
+    ]
     all_results: dict[str, list[dict]] = {}
 
     # Query all namespaces

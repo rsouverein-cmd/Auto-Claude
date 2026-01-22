@@ -377,6 +377,19 @@ async def get_combined_context(
             vision_available=vision_context is not None,
         )
 
+    # Log VISION retrieval status (important for debugging integration)
+    if vision_context:
+        logger.info(f"VISION context retrieved: {len(vision_context)} chars")
+        if is_debug_enabled():
+            debug_success(
+                "memory",
+                "VISION context included",
+                chars=len(vision_context),
+                namespaces="learnings,skills,protocols,templates,errors,external-docs,research,usage",
+            )
+    else:
+        logger.debug("VISION context: None (disabled or no results)")
+
     # Combine contexts
     combined_parts = []
 
