@@ -268,7 +268,7 @@ async def get_vision_context(subtask: dict) -> str | None:
         )
 
     try:
-        from vision_client import get_vision_context as vision_query, is_vision_enabled
+        from .vision_client import get_vision_context as vision_query, is_vision_enabled
 
         if not is_vision_enabled():
             if is_debug_enabled():
