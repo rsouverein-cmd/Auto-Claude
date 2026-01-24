@@ -138,7 +138,13 @@ async def query_vision(
             response.raise_for_status()
 
             data = response.json()
-            matches = data.get("matches", [])
+            
+            # Handle n8n array response format: [{usage: {...}, result: {hits: [...]}}]
+            if isinstance(data, list) and len(data) > 0:
+                data = data[0]
+            
+            # Extract hits from Pinecone response structure
+            matches = data.get("result", {}).get("hits", []) or data.get("matches", [])
 
             logger.debug(
                 f"VISION query returned {len(matches)} results",
@@ -203,18 +209,22 @@ async def get_vision_context(
         sections.append(f"### {ns_title}\n")
 
         for item in results:
-            # Handle different response formats
+            # Handle different response formats (Pinecone fields vs metadata)
+            fields = item.get("fields", {})
+            metadata = item.get("metadata", {})
             content = (
-                item.get("metadata", {}).get("content")
+                fields.get("text")
+                or metadata.get("content")
                 or item.get("content")
                 or item.get("text", "")
             )
             title = (
-                item.get("metadata", {}).get("title")
+                fields.get("title")
+                or metadata.get("title")
                 or item.get("title")
-                or ""
+                or item.get("_id", "")  # Use ID as fallback title
             )
-            score = item.get("score", 0)
+            score = item.get("_score") or item.get("score", 0)
 
             if title:
                 sections.append(f"- **{title}** (score: {score:.2f})")
@@ -297,18 +307,22 @@ async def get_vision_context_for_phase(
         sections.append(f"### {ns_title}\n")
 
         for item in results:
-            # Handle different response formats
+            # Handle different response formats (Pinecone fields vs metadata)
+            fields = item.get("fields", {})
+            metadata = item.get("metadata", {})
             content = (
-                item.get("metadata", {}).get("content")
+                fields.get("text")
+                or metadata.get("content")
                 or item.get("content")
                 or item.get("text", "")
             )
             title = (
-                item.get("metadata", {}).get("title")
+                fields.get("title")
+                or metadata.get("title")
                 or item.get("title")
-                or ""
+                or item.get("_id", "")  # Use ID as fallback title
             )
-            score = item.get("score", 0)
+            score = item.get("_score") or item.get("score", 0)
 
             if title:
                 sections.append(f"- **{title}** (score: {score:.2f})")
