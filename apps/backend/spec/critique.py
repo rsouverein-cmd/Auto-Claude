@@ -12,6 +12,9 @@ The critique system ensures:
 - Error handling is present
 - No debugging artifacts left behind
 - Implementation matches subtask requirements
+
+Memory Integration:
+- VISION: Cross-project quality patterns, ADRs, and error learnings
 """
 
 import re
@@ -160,6 +163,63 @@ If you identified issues in your critique, list what you fixed:
 
 Remember: The next session has no context. Quality issues you miss now will be harder to fix later.
 """
+
+    return prompt
+
+
+async def generate_critique_prompt_with_vision(
+    subtask: dict, files_modified: list[str], patterns_from: list[str]
+) -> str:
+    """
+    Generate a critique prompt enriched with VISION context.
+
+    This async version retrieves cross-project quality patterns, ADRs, and
+    error learnings from VISION to enhance the self-critique process.
+
+    Args:
+        subtask: The subtask being implemented
+        files_modified: List of files actually modified
+        patterns_from: List of pattern files to compare against
+
+    Returns:
+        Formatted prompt with VISION context included
+    """
+    # Generate base critique prompt
+    prompt = generate_critique_prompt(subtask, files_modified, patterns_from)
+
+    # Try to retrieve VISION context for critique phase
+    try:
+        from agents.vision_client import get_vision_context_for_phase, is_vision_enabled
+
+        if is_vision_enabled():
+            subtask_desc = subtask.get("description", "")
+            vision_context = await get_vision_context_for_phase(
+                f"Self-critique for: {subtask_desc}",
+                phase="critique",  # Uses: protocols, learnings, errors
+            )
+            if vision_context:
+                # Insert VISION context before the Instructions section
+                vision_section = f"""
+---
+
+## VISION Memory Context (Cross-Project Learnings)
+
+The following patterns and learnings from past projects may be relevant to your critique:
+
+{vision_context}
+
+Use this context to identify potential issues that match known error patterns or violate established ADRs.
+
+"""
+                # Insert before "## Instructions for Agent"
+                prompt = prompt.replace(
+                    "## Instructions for Agent",
+                    vision_section + "## Instructions for Agent",
+                )
+    except ImportError:
+        pass  # VISION not available, use base prompt
+    except Exception:
+        pass  # Graceful degradation - continue without VISION
 
     return prompt
 

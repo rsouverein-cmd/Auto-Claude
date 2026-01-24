@@ -3,8 +3,13 @@ Requirements and Research Phase Implementations
 ================================================
 
 Phases for requirements gathering, historical context, and research.
+
+Memory Integration:
+- Graphiti: Project-specific knowledge graph (when enabled)
+- VISION: Cross-project learnings, ADRs, patterns from DMI VectorDB
 """
 
+import asyncio
 import json
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -22,47 +27,37 @@ class RequirementsPhaseMixin:
     """Mixin for requirements and research phase methods."""
 
     async def phase_historical_context(self) -> PhaseResult:
-        """Retrieve historical context from Graphiti knowledge graph (if enabled)."""
+        """
+        Retrieve historical context from Graphiti knowledge graph AND VISION VectorDB.
+        
+        Memory sources:
+        - Graphiti: Project-specific patterns, gotchas, insights
+        - VISION: Cross-project learnings, ADRs, error patterns from DMI
+        """
         from graphiti_providers import get_graph_hints, is_graphiti_enabled
 
         hints_file = self.spec_dir / "graph_hints.json"
+        vision_file = self.spec_dir / "vision_context.json"
 
-        if hints_file.exists():
-            self.ui.print_status("graph_hints.json already exists", "success")
+        # Check if context files already exist
+        if hints_file.exists() and vision_file.exists():
+            self.ui.print_status("Historical context already available", "success")
             self.task_logger.log(
-                "Historical context already available",
+                "Historical context already available (Graphiti + VISION)",
                 LogEntryType.SUCCESS,
                 LogPhase.PLANNING,
             )
-            return PhaseResult("historical_context", True, [str(hints_file)], [], 0)
+            return PhaseResult("historical_context", True, [str(hints_file), str(vision_file)], [], 0)
 
-        if not is_graphiti_enabled():
-            self.ui.print_status(
-                "Graphiti not enabled, skipping historical context", "info"
-            )
-            self.task_logger.log(
-                "Knowledge graph not configured, skipping",
-                LogEntryType.INFO,
-                LogPhase.PLANNING,
-            )
-            validator.create_empty_hints(
-                self.spec_dir,
-                enabled=False,
-                reason="Graphiti not configured",
-            )
-            return PhaseResult("historical_context", True, [str(hints_file)], [], 0)
-
-        # Get graph hints for this task
+        # Get task query
         task_query = self.task_description or ""
-
-        # If we have requirements, use the full task description
         req = requirements.load_requirements(self.spec_dir)
         if req:
             task_query = req.get("task_description", task_query)
 
         if not task_query:
             self.ui.print_status(
-                "No task description for graph query, skipping", "warning"
+                "No task description for context query, skipping", "warning"
             )
             validator.create_empty_hints(
                 self.spec_dir,
@@ -71,56 +66,106 @@ class RequirementsPhaseMixin:
             )
             return PhaseResult("historical_context", True, [str(hints_file)], [], 0)
 
-        self.ui.print_status("Querying Graphiti knowledge graph...", "progress")
+        # Query both Graphiti and VISION in parallel
+        self.ui.print_status("Querying Graphiti + VISION for context...", "progress")
         self.task_logger.log(
-            "Searching knowledge graph for relevant context...",
+            "Searching knowledge graph and VISION VectorDB...",
             LogEntryType.INFO,
             LogPhase.PLANNING,
         )
 
-        try:
-            hints = await get_graph_hints(
-                query=task_query,
-                project_id=str(self.project_dir),
-                max_results=10,
-            )
+        graphiti_hints = []
+        vision_context = None
+        errors = []
 
-            # Save hints to file
-            with open(hints_file, "w") as f:
-                json.dump(
-                    {
-                        "enabled": True,
-                        "query": task_query,
-                        "hints": hints,
-                        "hint_count": len(hints),
-                        "created_at": datetime.now().isoformat(),
-                    },
-                    f,
-                    indent=2,
+        # Define async tasks for parallel execution
+        async def get_graphiti():
+            if not is_graphiti_enabled():
+                return []
+            try:
+                return await get_graph_hints(
+                    query=task_query,
+                    project_id=str(self.project_dir),
+                    max_results=10,
                 )
+            except Exception as e:
+                errors.append(f"Graphiti: {e}")
+                return []
 
-            if hints:
-                self.ui.print_status(f"Retrieved {len(hints)} graph hints", "success")
-                self.task_logger.log(
-                    f"Found {len(hints)} relevant insights from past sessions",
-                    LogEntryType.SUCCESS,
-                    LogPhase.PLANNING,
+        async def get_vision():
+            try:
+                from agents.vision_client import get_vision_context_for_phase, is_vision_enabled
+                if not is_vision_enabled():
+                    return None
+                return await get_vision_context_for_phase(
+                    task_query,
+                    phase="spec",  # Use spec phase namespaces: protocols, learnings, skills
                 )
-            else:
-                self.ui.print_status("No relevant graph hints found", "info")
+            except ImportError:
+                return None
+            except Exception as e:
+                errors.append(f"VISION: {e}")
+                return None
 
-            return PhaseResult("historical_context", True, [str(hints_file)], [], 0)
+        # Run in parallel
+        graphiti_hints, vision_context = await asyncio.gather(
+            get_graphiti(),
+            get_vision(),
+            return_exceptions=False,
+        )
 
-        except Exception as e:
-            self.ui.print_status(f"Graph query failed: {e}", "warning")
-            validator.create_empty_hints(
-                self.spec_dir,
-                enabled=True,
-                reason=f"Error: {str(e)}",
+        # Save Graphiti hints
+        with open(hints_file, "w") as f:
+            json.dump(
+                {
+                    "enabled": is_graphiti_enabled(),
+                    "query": task_query,
+                    "hints": graphiti_hints or [],
+                    "hint_count": len(graphiti_hints) if graphiti_hints else 0,
+                    "created_at": datetime.now().isoformat(),
+                },
+                f,
+                indent=2,
             )
-            return PhaseResult(
-                "historical_context", True, [str(hints_file)], [str(e)], 0
+
+        # Save VISION context
+        with open(vision_file, "w") as f:
+            json.dump(
+                {
+                    "enabled": vision_context is not None,
+                    "query": task_query,
+                    "context": vision_context or "",
+                    "context_length": len(vision_context) if vision_context else 0,
+                    "created_at": datetime.now().isoformat(),
+                },
+                f,
+                indent=2,
             )
+
+        # Report results
+        results = []
+        if graphiti_hints:
+            results.append(f"{len(graphiti_hints)} Graphiti hints")
+        if vision_context:
+            results.append("VISION context loaded")
+
+        if results:
+            self.ui.print_status(f"Retrieved: {', '.join(results)}", "success")
+            self.task_logger.log(
+                f"Historical context: {', '.join(results)}",
+                LogEntryType.SUCCESS,
+                LogPhase.PLANNING,
+            )
+        else:
+            self.ui.print_status("No historical context found", "info")
+
+        return PhaseResult(
+            "historical_context", 
+            True, 
+            [str(hints_file), str(vision_file)], 
+            errors, 
+            0
+        )
 
     async def phase_requirements(self, interactive: bool = True) -> PhaseResult:
         """Gather requirements from user or task description."""

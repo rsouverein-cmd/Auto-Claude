@@ -28,6 +28,7 @@ from ui import (
 )
 
 from .session import run_agent_session
+from .vision_client import get_vision_context_for_phase, is_vision_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,21 @@ async def run_followup_planner(
 
     # Generate follow-up planner prompt
     prompt = get_followup_planner_prompt(spec_dir)
+
+    # Retrieve VISION context for planning phase (ADRs, patterns, learnings)
+    # This provides cross-project knowledge to inform planning decisions
+    if is_vision_enabled():
+        try:
+            vision_context = await get_vision_context_for_phase(
+                "Follow-up planning for additional subtasks",
+                phase="planning",
+            )
+            if vision_context:
+                prompt += "\n\n" + vision_context
+                print_status("VISION context loaded (ADRs, patterns)", "success")
+        except Exception as e:
+            logger.warning(f"VISION context retrieval failed: {e}")
+            # Graceful degradation - continue without VISION
 
     print_status("Running follow-up planner...", "progress")
     print()

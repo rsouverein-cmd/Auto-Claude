@@ -13,6 +13,7 @@ from pathlib import Path
 
 # Memory integration for cross-session learning
 from agents.memory_manager import get_graphiti_context, save_session_memory
+from agents.vision_client import get_vision_context_for_phase, is_vision_enabled
 from claude_agent_sdk import ClaudeSDKClient
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from security.tool_input_validator import get_safe_tool_input
@@ -113,8 +114,23 @@ async def run_qa_fixer_session(
     )
     if fixer_memory_context:
         prompt += "\n\n" + fixer_memory_context
-        print("✓ Memory context loaded for QA fixer")
+        print("✓ Graphiti memory context loaded for QA fixer")
         debug_success("qa_fixer", "Graphiti memory context loaded for fixer")
+
+    # Retrieve VISION context for fixer (error patterns, fix solutions, ADRs)
+    # VISION provides cross-project error patterns and proven fix strategies
+    if is_vision_enabled():
+        try:
+            vision_context = await get_vision_context_for_phase(
+                "Fixing QA issues and implementing corrections",
+                phase="fixer",  # Error-focused namespace selection
+            )
+            if vision_context:
+                prompt += "\n\n" + vision_context
+                print("✓ VISION context loaded (error patterns, fixes)")
+                debug_success("qa_fixer", "VISION memory context loaded for fixer")
+        except Exception as e:
+            debug_error("qa_fixer", f"VISION context retrieval failed: {e}")
 
     # Add session context - use full path so agent can find files
     prompt += f"\n\n---\n\n**Fix Session**: {fix_session}\n"

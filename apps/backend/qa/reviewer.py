@@ -14,6 +14,7 @@ from pathlib import Path
 
 # Memory integration for cross-session learning
 from agents.memory_manager import get_graphiti_context, save_session_memory
+from agents.vision_client import get_vision_context_for_phase, is_vision_enabled
 from claude_agent_sdk import ClaudeSDKClient
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from prompts_pkg import get_qa_reviewer_prompt
@@ -99,8 +100,23 @@ async def run_qa_agent_session(
     )
     if qa_memory_context:
         prompt += "\n\n" + qa_memory_context
-        print("✓ Memory context loaded for QA reviewer")
+        print("✓ Graphiti memory context loaded for QA reviewer")
         debug_success("qa_reviewer", "Graphiti memory context loaded for QA")
+
+    # Retrieve VISION context for QA (ADRs, security patterns, error learnings)
+    # VISION provides cross-project knowledge for better QA validation
+    if is_vision_enabled():
+        try:
+            vision_context = await get_vision_context_for_phase(
+                "QA validation and acceptance criteria review",
+                phase="qa",
+            )
+            if vision_context:
+                prompt += "\n\n" + vision_context
+                print("✓ VISION context loaded (ADRs, error patterns)")
+                debug_success("qa_reviewer", "VISION memory context loaded for QA")
+        except Exception as e:
+            debug_error("qa_reviewer", f"VISION context retrieval failed: {e}")
 
     # Add session context
     prompt += f"\n\n---\n\n**QA Session**: {qa_session}\n"

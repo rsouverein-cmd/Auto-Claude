@@ -27,6 +27,22 @@ DEFAULT_NAMESPACE = "learnings"
 DEFAULT_TOP_K = 5
 REQUEST_TIMEOUT = 30.0  # seconds
 
+# Observable logging marker - grep for "[VISION]" to verify queries
+VISION_LOG_PREFIX = "[VISION]"
+
+# Phase-specific namespace mapping (ADR COMPLIANT)
+# CRITICAL: All phases include 'protocols' to ensure ADR patterns are available
+PHASE_NAMESPACES = {
+    "spec": ["protocols", "learnings", "skills"],
+    "planning": ["protocols", "learnings", "skills", "errors"],
+    "coding": ["protocols", "learnings", "skills", "errors", "templates", "workflows"],
+    "qa": ["protocols", "learnings", "errors"],
+    "review": ["protocols", "learnings", "errors"],
+    "critique": ["protocols", "learnings", "errors"],
+    "deploy": ["protocols", "skills"],
+    "fixer": ["protocols", "errors", "learnings"],  # Error-focused for self-healing
+}
+
 
 def _load_dmi_secret() -> str:
     """
@@ -215,9 +231,113 @@ async def get_vision_context(
     return "\n".join(sections)
 
 
+async def get_vision_context_for_phase(
+    description: str,
+    phase: str,
+    top_k: int = DEFAULT_TOP_K,
+) -> str | None:
+    """
+    Get phase-appropriate VISION context with ADR compliance.
+
+    All phases include 'protocols' namespace to ensure ADR patterns are available.
+    This is the recommended function for phase-specific context retrieval.
+
+    Args:
+        description: Task/subtask description
+        phase: Auto-Claude phase (spec, planning, coding, qa, review, critique, deploy, fixer)
+        top_k: Results per namespace
+
+    Returns:
+        Formatted context string or None if unavailable
+    """
+    if not is_vision_enabled():
+        logger.info(f"{VISION_LOG_PREFIX} Query SKIPPED | phase={phase} | reason=VISION_NOT_ENABLED")
+        return None
+
+    # Get phase-specific namespaces, with fallback to default
+    namespaces = PHASE_NAMESPACES.get(phase, ["protocols", "learnings", "skills"])
+
+    logger.info(f"{VISION_LOG_PREFIX} Query START | phase={phase} | namespaces={namespaces}")
+
+    all_results: dict[str, list[dict]] = {}
+    successful_namespaces = []
+    empty_namespaces = []
+
+    # Query all namespaces with graceful handling for empty/unavailable namespaces
+    for ns in namespaces:
+        try:
+            results = await query_vision(description, namespace=ns, top_k=top_k)
+            if results:
+                all_results[ns] = results
+                successful_namespaces.append(ns)
+            else:
+                empty_namespaces.append(ns)
+        except Exception as e:
+            logger.debug(f"Namespace {ns} query failed: {e}")
+            empty_namespaces.append(ns)
+            continue  # Graceful skip for unavailable namespaces (e.g., 'workflows' if empty)
+
+    # Calculate total results
+    total_results = sum(len(r) for r in all_results.values())
+
+    if not all_results:
+        logger.info(
+            f"{VISION_LOG_PREFIX} Query END | phase={phase} | "
+            f"namespaces_queried={len(namespaces)} | results=0 | "
+            f"empty_namespaces={empty_namespaces}"
+        )
+        return None
+
+    # Format results (reuse existing format logic)
+    sections = ["## VISION Memory Context\n"]
+    sections.append(f"_Phase: {phase} | Retrieved from DMI knowledge base:_\n")
+
+    for namespace, results in all_results.items():
+        ns_title = namespace.replace("_", " ").title()
+        sections.append(f"### {ns_title}\n")
+
+        for item in results:
+            # Handle different response formats
+            content = (
+                item.get("metadata", {}).get("content")
+                or item.get("content")
+                or item.get("text", "")
+            )
+            title = (
+                item.get("metadata", {}).get("title")
+                or item.get("title")
+                or ""
+            )
+            score = item.get("score", 0)
+
+            if title:
+                sections.append(f"- **{title}** (score: {score:.2f})")
+                if content:
+                    truncated = content[:300] + "..." if len(content) > 300 else content
+                    sections.append(f"  {truncated}")
+            elif content:
+                truncated = content[:400] + "..." if len(content) > 400 else content
+                sections.append(f"- {truncated} (score: {score:.2f})")
+
+            sections.append("")
+
+    context = "\n".join(sections)
+
+    logger.info(
+        f"{VISION_LOG_PREFIX} Query END | phase={phase} | "
+        f"namespaces_queried={len(namespaces)} | results={total_results} | "
+        f"context_chars={len(context)} | successful={successful_namespaces}"
+    )
+
+    return context
+
+
 # Export public interface
 __all__ = [
     "get_vision_context",
+    "get_vision_context_for_phase",
     "query_vision",
     "is_vision_enabled",
+    "PHASE_NAMESPACES",
+    "VISION_LOG_PREFIX",
 ]

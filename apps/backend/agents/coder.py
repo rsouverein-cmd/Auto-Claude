@@ -57,7 +57,7 @@ from ui import (
 )
 
 from .base import AUTO_CONTINUE_DELAY_SECONDS, HUMAN_INTERVENTION_FILE
-from .memory_manager import debug_memory_system_status, get_graphiti_context
+from .memory_manager import debug_memory_system_status, get_combined_context
 from .session import post_session_processing, run_agent_session
 from .utils import (
     find_phase_for_subtask,
@@ -276,9 +276,10 @@ async def run_autonomous_agent(
         if first_run:
             prompt = generate_planner_prompt(spec_dir, project_dir)
 
-            # Retrieve Graphiti memory context for planning phase
-            # This gives the planner knowledge of previous patterns, gotchas, and insights
-            planner_context = await get_graphiti_context(
+            # Retrieve combined memory context for planning phase (Graphiti + VISION)
+            # This gives the planner knowledge of previous patterns, gotchas, insights,
+            # AND cross-project learnings/ADRs from VISION VectorDB
+            planner_context = await get_combined_context(
                 spec_dir,
                 project_dir,
                 {
@@ -288,7 +289,7 @@ async def run_autonomous_agent(
             )
             if planner_context:
                 prompt += "\n\n" + planner_context
-                print_status("Graphiti memory context loaded for planner", "success")
+                print_status("Memory context loaded (Graphiti + VISION)", "success")
 
             first_run = False
             current_log_phase = LogPhase.PLANNING
@@ -343,13 +344,14 @@ async def run_autonomous_agent(
             if context.get("patterns") or context.get("files_to_modify"):
                 prompt += "\n\n" + format_context_for_prompt(context)
 
-            # Retrieve and append Graphiti memory context (if enabled)
-            graphiti_context = await get_graphiti_context(
+            # Retrieve and append combined memory context (Graphiti + VISION)
+            # VISION provides cross-project learnings, ADRs, and error patterns
+            memory_context = await get_combined_context(
                 spec_dir, project_dir, next_subtask
             )
-            if graphiti_context:
-                prompt += "\n\n" + graphiti_context
-                print_status("Graphiti memory context loaded", "success")
+            if memory_context:
+                prompt += "\n\n" + memory_context
+                print_status("Memory context loaded (Graphiti + VISION)", "success")
 
             # Show what we're working on
             print(f"Working on: {highlight(subtask_id)}")
