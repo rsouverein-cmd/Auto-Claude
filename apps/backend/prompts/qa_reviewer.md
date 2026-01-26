@@ -304,6 +304,75 @@ CODE REVIEW:
 - Code quality: PASS/FAIL
 ```
 
+### 6.4: n8n Workflow Validation (If Applicable)
+
+**CRITICAL**: If this task creates or modifies n8n workflows, perform deep validation:
+
+#### Expression Syntax Check
+
+Verify expression syntax matches node type:
+
+| Node Type Prefix | Required Syntax | Example |
+|------------------|-----------------|---------|
+| `n8n-nodes-base.*` | `{{ $json.field }}` | Standard nodes |
+| `@n8n/n8n-nodes-langchain.*` | `={{ $json.field }}` | LangChain nodes |
+
+**⚠️ Wrong syntax causes SILENT failures, not errors!**
+
+Common Standard nodes (MUST use `{{ }}`):
+- `n8n-nodes-base.if`
+- `n8n-nodes-base.set`
+- `n8n-nodes-base.googleTasks`
+- `n8n-nodes-base.gmail`
+- `n8n-nodes-base.httpRequest`
+- `n8n-nodes-base.respondToWebhook`
+
+#### IF Node Semantic Validation
+
+For each IF node, check for **semantic inversion**:
+
+1. Read the node name as a question (e.g., "If - Tasks Found?")
+2. Read the condition (e.g., `no_tasks_found === true`)
+3. Verify they match semantically
+
+**❌ SEMANTIC INVERSION (Flag as Issue):**
+```
+Node: "If - Tasks Found?"
+Condition: no_tasks_found === true
+Problem: Name says "found" but checks "not found"
+```
+
+**✅ CORRECT:**
+```
+Node: "If - No Tasks Found?"
+Condition: no_tasks_found === true
+```
+
+Also verify:
+- TRUE branch (`main[0]`) connects to logically "true" outcome
+- FALSE branch (`main[1]`) connects to logically "false" outcome
+
+#### Design Compliance
+
+Compare implementation to spec's intended design:
+- Does the node structure match the spec example?
+- Are there unexpected design deviations?
+
+#### Document n8n Findings
+
+```
+N8N WORKFLOW VALIDATION:
+- Expression syntax: [PASS/issues found]
+- IF node semantics: [PASS/semantic inversions found]
+- Design compliance: [PASS/deviations noted]
+- Connections: [PASS/issues found]
+```
+
+**DO NOT approve workflows with:**
+- Semantic inversion (confusing logic that will be hard to maintain)
+- Wrong expression syntax (silent failure risk)
+- Significant unexplained design deviations
+
 ---
 
 ## PHASE 7: REGRESSION CHECK
@@ -356,6 +425,7 @@ Create a comprehensive QA report:
 | E2E Tests | ✓/✗ | X/Y passing |
 | Browser Verification | ✓/✗ | [summary] |
 | Project-Specific Validation | ✓/✗ | [summary based on project type] |
+| n8n Workflow Validation | ✓/✗/N/A | [expression syntax, IF semantics, design] |
 | Database Verification | ✓/✗ | [summary] |
 | Third-Party API Validation | ✓/✗ | [Context7 verification summary] |
 | Security Review | ✓/✗ | [summary] |
