@@ -29,6 +29,28 @@ class SpecPhaseMixin:
                 "quick_spec", True, [str(spec_file), str(plan_file)], [], 0
             )
 
+        # Query VISION for relevant context (even for SIMPLE tasks)
+        # VISION provides cross-project learnings, patterns, and error solutions
+        vision_context = ""
+        try:
+            from agents.vision_client import get_vision_context_for_phase, is_vision_enabled
+            if is_vision_enabled():
+                self.ui.print_status("Querying VISION for quick spec context...", "progress")
+                vision_result = await get_vision_context_for_phase(
+                    self.task_description or "quick spec task",
+                    phase="spec",  # Use spec phase namespaces (protocols, learnings, skills)
+                    top_k=3,       # Fewer results for quick spec
+                )
+                if vision_result:
+                    vision_context = f"\n\n## VISION Context (Cross-Project Learnings)\n{vision_result}\n"
+                    self.ui.print_status("VISION context loaded", "success")
+                else:
+                    self.ui.print_status("No relevant VISION context found", "info")
+            else:
+                self.ui.print_status("VISION not enabled (no DMI_SECRET)", "info")
+        except Exception as e:
+            self.ui.print_status(f"VISION query skipped: {e}", "warning")
+
         errors = []
         for attempt in range(MAX_RETRIES):
             self.ui.print_status(
@@ -39,7 +61,7 @@ class SpecPhaseMixin:
 **Task**: {self.task_description}
 **Spec Directory**: {self.spec_dir}
 **Complexity**: SIMPLE (1-2 files expected)
-
+{vision_context}
 This is a SIMPLE task. Create a minimal spec and implementation plan directly.
 No research or extensive analysis needed.
 

@@ -134,6 +134,23 @@ class ComplexityAnalyzer:
         "refactor",
         "architecture",
         "infrastructure",
+        # Workflow/automation platforms (require pattern knowledge)
+        "n8n",
+        "workflow",
+        "webhook",
+        "cron",
+        "pipeline",
+        "automation",
+    ]
+
+    # Keywords that require MINIMUM STANDARD complexity (never SIMPLE)
+    # These escalate SIMPLE → STANDARD because they require pattern knowledge
+    STANDARD_MINIMUM_KEYWORDS = [
+        "n8n",           # n8n workflows have critical syntax rules
+        "workflow",      # Workflow creation requires patterns
+        "webhook",       # Webhook handling needs understanding
+        "expression",    # n8n expressions have specific syntax
+        "trigger",       # Event triggers need careful setup
     ]
 
     MULTI_SERVICE_KEYWORDS = [
@@ -158,6 +175,7 @@ class ComplexityAnalyzer:
     ) -> ComplexityAssessment:
         """Analyze task and return complexity assessment."""
         task_lower = task_description.lower()
+        self._task_lower = task_lower  # Store for use in _calculate_complexity
         signals = {}
 
         # 1. Keyword analysis
@@ -221,6 +239,9 @@ class ComplexityAnalyzer:
             r"\b(docker|kubernetes|k8s)\b",
             r"\b(openai|anthropic|llm|ai)\b",
             r"\b(sendgrid|twilio|email|sms)\b",
+            # Workflow/automation platforms
+            r"\b(n8n|workflow|automation)\b",
+            r"\b(webhook|trigger|hook)\b",
         ]
 
         found = []
@@ -303,8 +324,17 @@ class ComplexityAnalyzer:
         """Calculate final complexity based on all signals."""
 
         reasons = []
+        task_lower = getattr(self, '_task_lower', '')
 
-        # Strong indicators for SIMPLE
+        # Check for STANDARD minimum keywords first (escalate from SIMPLE)
+        # These keywords require pattern knowledge and should never be SIMPLE
+        standard_minimum_match = None
+        for kw in self.STANDARD_MINIMUM_KEYWORDS:
+            if kw in task_lower:
+                standard_minimum_match = kw
+                break
+
+        # Strong indicators for SIMPLE (but check for escalation)
         if (
             estimated_files <= 2
             and estimated_services == 1
@@ -313,6 +343,13 @@ class ComplexityAnalyzer:
             and signals["simple_keywords"] > 0
             and signals["complex_keywords"] == 0
         ):
+            # Check if we need to escalate due to STANDARD_MINIMUM_KEYWORDS
+            if standard_minimum_match:
+                reasons.append(
+                    f"Escalated to STANDARD: contains '{standard_minimum_match}' (requires pattern knowledge)"
+                )
+                return Complexity.STANDARD, 0.85, "; ".join(reasons)
+
             reasons.append(
                 f"Single service, {estimated_files} file(s), no integrations"
             )

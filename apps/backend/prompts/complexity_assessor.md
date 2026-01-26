@@ -130,6 +130,54 @@ Analyze the task against these dimensions:
 - Are there security considerations?
 - Could this break existing functionality?
 
+### 6. n8n Workflow Analysis (CRITICAL)
+
+If the task involves creating or modifying n8n workflows:
+
+**MINIMUM COMPLEXITY: STANDARD** (NEVER classify as SIMPLE!)
+
+**Why n8n tasks are NEVER simple:**
+- Expression syntax rules: `{{ }}` (standard nodes) vs `={{ }}` (LangChain nodes)
+- IF node semantics require careful naming to avoid logic confusion
+- Connection format (`[[{...}]]`) is non-obvious and error-prone
+- Wrong syntax causes SILENT failures, not errors
+- responseMode must match Respond node presence
+
+**Required flags for n8n tasks:**
+- `needs_research: true` - VISION has n8n patterns and learnings
+- `historical_context` MUST be in recommended_phases
+
+**Integration detection:**
+- "n8n" MUST be listed in `external_services`
+- Even "local n8n" or "n8n LOCAL" counts as integration requiring knowledge
+
+**n8n Task Example Assessment:**
+```json
+{
+  "complexity": "standard",
+  "workflow_type": "feature",
+  "analysis": {
+    "integrations": {
+      "external_services": ["n8n"],
+      "research_needed": true,
+      "notes": "n8n workflow requires expression syntax and node pattern knowledge"
+    }
+  },
+  "recommended_phases": [
+    "discovery",
+    "historical_context",
+    "requirements",
+    "context",
+    "spec_writing",
+    "planning",
+    "validation"
+  ],
+  "flags": {
+    "needs_research": true
+  }
+}
+```
+
 ---
 
 ## PHASE 1: ANALYZE THE TASK
@@ -137,6 +185,8 @@ Analyze the task against these dimensions:
 Read the task description carefully. Look for:
 
 **Complexity Indicators (suggest higher complexity):**
+- "n8n", "workflow", "webhook" → workflow creation (MINIMUM STANDARD, never SIMPLE!)
+- "expression", "node", "trigger" → likely n8n context (check for STANDARD)
 - "integrate", "integration" → external dependency
 - "optional", "configurable", "toggle" → feature flags, conditional logic
 - "docker", "compose", "container" → infrastructure
@@ -153,35 +203,42 @@ Read the task description carefully. Look for:
 - "style", "color", "text", "label" → UI tweaks
 - Specific file paths mentioned → known scope
 
+**IMPORTANT**: If ANY n8n/workflow indicator is present, complexity is MINIMUM STANDARD regardless of simplicity indicators!
+
 ---
 
 ## PHASE 2: DETERMINE PHASES NEEDED
 
 Based on your analysis, determine which phases are needed:
 
+**CRITICAL RULE**: `historical_context` phase MUST be included in ALL recommended_phases lists!
+This phase queries VISION for cross-project learnings. Skipping it loses valuable pattern knowledge.
+
 ### For SIMPLE tasks:
 ```
-discovery → quick_spec → validation
+discovery → historical_context → quick_spec → validation
 ```
-(3 phases, no research, minimal planning)
+(4 phases - historical_context is MANDATORY!)
 
 ### For STANDARD tasks:
 ```
-discovery → requirements → context → spec_writing → planning → validation
+discovery → historical_context → requirements → context → spec_writing → planning → validation
 ```
-(6 phases, context-based spec writing)
+(7 phases, context-based spec writing)
 
 ### For STANDARD tasks WITH external dependencies:
 ```
-discovery → requirements → research → context → spec_writing → planning → validation
+discovery → historical_context → requirements → research → context → spec_writing → planning → validation
 ```
-(7 phases, includes research for unfamiliar dependencies)
+(8 phases, includes research for unfamiliar dependencies)
 
 ### For COMPLEX tasks:
 ```
-discovery → requirements → research → context → spec_writing → self_critique → planning → validation
+discovery → historical_context → requirements → research → context → spec_writing → self_critique → planning → validation
 ```
-(8 phases, full pipeline with research and self-critique)
+(9 phases, full pipeline with research and self-critique)
+
+**NEVER omit historical_context from recommended_phases!**
 
 ---
 
