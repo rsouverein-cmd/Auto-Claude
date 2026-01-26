@@ -495,6 +495,86 @@ Use the Task tool to spawn a subagent:
 - Test end-to-end flow
 - Verify data flows correctly between services
 
+**For n8n Workflow Subtasks:**
+
+When creating or modifying n8n workflows, follow these CRITICAL rules:
+
+#### Expression Syntax (CRITICAL - Wrong syntax causes SILENT failures!)
+
+| Node Type | Syntax | Example |
+|-----------|--------|---------|
+| **Standard nodes** (`n8n-nodes-base.*`) | `{{ $json.field }}` | `{{ $json.id }}` |
+| **LangChain nodes** (`@n8n/n8n-nodes-langchain.*`) | `={{ $json.field }}` | `={{ $json.prompt }}` |
+| **Code nodes** (JavaScript) | Direct reference | `$input.item.json.field` |
+
+**Quick Check Rule:**
+- If node type starts with `n8n-nodes-base.` → Use `{{ }}` (NO = prefix)
+- If node type starts with `@n8n/n8n-nodes-langchain.` → Use `={{ }}` (WITH = prefix)
+
+Common Standard nodes (MUST use `{{ }}`):
+- `n8n-nodes-base.if`
+- `n8n-nodes-base.set`
+- `n8n-nodes-base.googleTasks`
+- `n8n-nodes-base.gmail`
+- `n8n-nodes-base.httpRequest`
+- `n8n-nodes-base.respondToWebhook`
+
+#### IF Node Semantic Naming (CRITICAL - Prevents logic confusion!)
+
+The IF node name MUST match what the condition checks:
+
+**❌ SEMANTIC INVERSION (WRONG):**
+```
+Node Name: "If - Tasks Found?"
+Condition: no_tasks_found === true
+Problem: Name says "found" but condition checks "not found"
+```
+
+**✅ CORRECT:**
+```
+Node Name: "If - No Tasks Found?"
+Condition: no_tasks_found === true
+Result: Name and condition match semantically
+```
+
+**Branch Indexing:**
+- `main[0]` = TRUE branch (condition is true)
+- `main[1]` = FALSE branch (condition is false)
+
+#### Connection Format
+
+Connections MUST use double-array format:
+```json
+"connections": {
+  "Node Name": {
+    "main": [[{ "node": "Next Node", "type": "main", "index": 0 }]]
+  }
+}
+```
+
+#### n8n Pre-Build Checklist
+
+Before implementing any n8n workflow, verify:
+
+- [ ] **Expression Syntax**: Correct `{{ }}` vs `={{ }}` based on node type
+- [ ] **IF Node Names**: Name matches what condition checks (no semantic inversion)
+- [ ] **IF Node Conditions**: `conditions.options.rules` is populated (not empty)
+- [ ] **Connections**: Using `[[{...}]]` double-array format
+- [ ] **Credentials**: Using credential IDs, not inline secrets
+- [ ] **responseMode**: Matches Respond node presence (`responseNode` if Respond exists)
+
+#### n8n Verification
+
+After implementing, verify with:
+```bash
+# Check for expression syntax issues
+grep -E '"={{[^}]+}}"' workflow.json  # Should only be LangChain nodes
+grep -E '"{{[^}]+}}"' workflow.json   # Should be Standard nodes
+
+# Check IF nodes have conditions
+grep -A 20 '"type": "n8n-nodes-base.if"' workflow.json | grep -A 5 '"rules"'
+```
+
 ---
 
 ## STEP 6.5: RUN SELF-CRITIQUE (MANDATORY)
