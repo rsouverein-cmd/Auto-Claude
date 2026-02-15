@@ -6,6 +6,8 @@ CLI commands for building specs and handling the main build flow.
 """
 
 import asyncio
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +49,9 @@ from .input_handlers import (
     read_from_file,
     read_multiline_input,
 )
+
+# PID file tracking for robust frontend process detection
+from core.pid_tracker import write_pid, clear_pid
 
 
 def handle_build_command(
@@ -96,6 +101,14 @@ def handle_build_command(
     planning_model = get_phase_model(spec_dir, "planning", model)
     coding_model = get_phase_model(spec_dir, "coding", model)
     qa_model = get_phase_model(spec_dir, "qa", model)
+
+    # Write PID for frontend tracking (robustness measure)
+    # atexit handler ensures cleanup even on exceptions
+    try:
+        write_pid(spec_dir)
+        debug("run.py", "PID file written for frontend tracking", pid=str(os.getpid()))
+    except Exception as e:
+        debug("run.py", f"Could not write PID file (non-fatal): {e}")
 
     print_banner()
     print(f"\nProject directory: {project_dir}")
@@ -231,6 +244,7 @@ def handle_build_command(
                 max_iterations=max_iterations,
                 verbose=verbose,
                 source_spec_dir=source_spec_dir,  # For syncing progress back to main project
+                main_project_dir=project_dir if working_dir != project_dir else None,  # For git when in worktree
             )
         )
         debug_success("run.py", "Agent execution completed")
@@ -261,6 +275,45 @@ def handle_build_command(
                     print("=" * 70)
                     print("\nAll acceptance criteria verified.")
                     print("The implementation is production-ready.\n")
+                    # Batch commit: one commit per phase (EXEC-083)
+                    if os.environ.get("BATCH_COMMITS", "").strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    ):
+                        try:
+                            subprocess.run(
+                                ["git", "add", ".", ":!.auto-claude"],
+                                cwd=working_dir,
+                                capture_output=True,
+                                timeout=30,
+                            )
+                            r = subprocess.run(
+                                [
+                                    "git",
+                                    "commit",
+                                    "-m",
+                                    "auto-claude: validation phase complete",
+                                ],
+                                cwd=working_dir,
+                                capture_output=True,
+                                text=True,
+                                timeout=30,
+                            )
+                            if r.returncode == 0 or (
+                                r.stderr and "nothing to commit" in r.stderr.lower()
+                            ):
+                                print_status("Batch commit: validation phase", "success")
+                            else:
+                                print_status(
+                                    "Batch commit: validation phase (no changes or failed)",
+                                    "info",
+                                )
+                        except subprocess.TimeoutExpired:
+                            print_status(
+                                "Batch commit: validation phase (timeout)",
+                                "info",
+                            )
                 else:
                     print("\n" + "=" * 70)
                     print("  ⚠️  QA VALIDATION INCOMPLETE")
@@ -296,7 +349,11 @@ def handle_build_command(
                 choice, project_dir, spec_dir.name, worktree_manager
             )
 
+        # Explicit PID file cleanup (atexit is backup)
+        clear_pid(spec_dir)
+
     except KeyboardInterrupt:
+        clear_pid(spec_dir)  # Clean up PID file on interrupt
         _handle_build_interrupt(
             spec_dir=spec_dir,
             project_dir=project_dir,
@@ -307,6 +364,7 @@ def handle_build_command(
             verbose=verbose,
         )
     except Exception as e:
+        clear_pid(spec_dir)  # Clean up PID file on error
         print(f"\nFatal error: {e}")
         if verbose:
             import traceback

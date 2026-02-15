@@ -59,6 +59,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
 
   // Check if task is stuck (status says in_progress/ai_review but no actual process)
   // Add a grace period to avoid false positives during process spawn
+  // Also includes PID file fallback for Windows os.execv() transition gaps
   useEffect(() => {
     let timeoutId: NodeJS.Timeout | undefined;
 
@@ -73,19 +74,32 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
     }
 
     if (isActiveTask && !hasCheckedRunning) {
-      // Wait 2 seconds before checking - gives process time to spawn and register
-      timeoutId = setTimeout(() => {
-        checkTaskRunning(task.id).then((actuallyRunning) => {
-          // Double-check the phase in case it changed while waiting
-          const latestPhase = task.executionProgress?.phase;
-          if (latestPhase === 'complete' || latestPhase === 'failed') {
-            setIsStuck(false);
-          } else {
-            setIsStuck(!actuallyRunning);
+      // Wait 5 seconds before checking - increased from 2s for Windows process chaining
+      // This gives time for spec_runner.py -> run.py transition on Windows
+      timeoutId = setTimeout(async () => {
+        const actuallyRunning = await checkTaskRunning(task.id);
+
+        // Fallback: Check PID file if process not tracked in memory
+        // This handles the Windows os.execv() gap and recovery scenarios
+        let pidFileActive = false;
+        if (!actuallyRunning && task.specsPath) {
+          try {
+            const result = await window.electronAPI.checkPidFile(task.specsPath);
+            pidFileActive = result.success && result.data === true;
+          } catch {
+            // Ignore errors - fallback to stuck detection
           }
-          setHasCheckedRunning(true);
-        });
-      }, 2000);
+        }
+
+        // Double-check the phase in case it changed while waiting
+        const latestPhase = task.executionProgress?.phase;
+        if (latestPhase === 'complete' || latestPhase === 'failed') {
+          setIsStuck(false);
+        } else {
+          setIsStuck(!actuallyRunning && !pidFileActive);
+        }
+        setHasCheckedRunning(true);
+      }, 5000);
     } else if (!isActiveTask) {
       setIsStuck(false);
       setHasCheckedRunning(false);
@@ -94,7 +108,7 @@ export function useTaskDetail({ task }: UseTaskDetailOptions) {
     return () => {
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [task.id, isActiveTask, hasCheckedRunning, executionPhase, task.executionProgress?.phase]);
+  }, [task.id, isActiveTask, hasCheckedRunning, executionPhase, task.executionProgress?.phase, task.specsPath]);
 
   // Handle scroll events in logs to detect if user scrolled up
   const handleLogsScroll = (e: React.UIEvent<HTMLDivElement>) => {

@@ -57,6 +57,7 @@ async def post_session_processing(
     linear_enabled: bool = False,
     status_manager: StatusManager | None = None,
     source_spec_dir: Path | None = None,
+    git_dir: Path | None = None,
 ) -> bool:
     """
     Process session results and update memory automatically.
@@ -65,7 +66,7 @@ async def post_session_processing(
 
     Args:
         spec_dir: Spec directory containing memory/
-        project_dir: Project root for git operations
+        project_dir: Project root (agent working directory)
         subtask_id: The subtask that was being worked on
         session_num: Current session number
         commit_before: Git commit hash before session
@@ -74,10 +75,12 @@ async def post_session_processing(
         linear_enabled: Whether Linear integration is enabled
         status_manager: Optional status manager for ccstatusline
         source_spec_dir: Original spec directory (for syncing back from worktree)
+        git_dir: Directory to use for git state (main repo when in worktree); default project_dir
 
     Returns:
         True if subtask was completed successfully
     """
+    _git_dir = git_dir if git_dir is not None else project_dir
     print()
     print(muted("--- Post-Session Processing ---"))
 
@@ -98,9 +101,9 @@ async def post_session_processing(
 
     subtask_status = subtask.get("status", "pending")
 
-    # Check for new commits
-    commit_after = get_latest_commit(project_dir)
-    commit_count_after = get_commit_count(project_dir)
+    # Check for new commits (use main repo when agent ran in worktree)
+    commit_after = get_latest_commit(_git_dir)
+    commit_count_after = get_commit_count(_git_dir)
     new_commits = commit_count_after - commit_count_before
 
     print_key_value("Subtask status", subtask_status)

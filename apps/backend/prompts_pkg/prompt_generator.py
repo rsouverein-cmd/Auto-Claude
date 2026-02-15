@@ -13,6 +13,7 @@ This approach:
 """
 
 import json
+import os
 from pathlib import Path
 
 
@@ -39,7 +40,9 @@ def get_relative_spec_path(spec_dir: Path, project_dir: Path) -> str:
         return f"./auto-claude/specs/{spec_dir.name}"
 
 
-def generate_environment_context(project_dir: Path, spec_dir: Path) -> str:
+def generate_environment_context(
+    project_dir: Path, spec_dir: Path, main_project_dir: Path | None = None
+) -> str:
     """
     Generate environment context header for prompts.
 
@@ -48,34 +51,55 @@ def generate_environment_context(project_dir: Path, spec_dir: Path) -> str:
     Args:
         project_dir: The working directory for the AI
         spec_dir: The spec directory (may be absolute or relative)
+        main_project_dir: When set (worktree mode), main repo root for git -C
 
     Returns:
         Markdown string with environment context
     """
     relative_spec = get_relative_spec_path(spec_dir, project_dir)
 
-    return f"""## YOUR ENVIRONMENT
-
-**Working Directory:** `{project_dir}`
-**Spec Location:** `{relative_spec}/`
-
-Your filesystem is restricted to your working directory. All file paths should be
-relative to this location. Do NOT use absolute paths.
-
-**⚠️ CRITICAL:** Before ANY git command or file operation, run `pwd` to verify your current
-directory. If you've used `cd` to change directories, you MUST use paths relative to your
-NEW location, not the working directory. See the PATH CONFUSION PREVENTION section in the
-coder prompt for detailed examples.
-
-**Important Files:**
-- Spec: `{relative_spec}/spec.md`
-- Plan: `{relative_spec}/implementation_plan.json`
-- Progress: `{relative_spec}/build-progress.txt`
-- Context: `{relative_spec}/context.json`
-
----
-
-"""
+    env_lines = [
+        "## YOUR ENVIRONMENT",
+        "",
+        f"**Working Directory:** `{project_dir}`",
+        f"**Spec Location:** `{relative_spec}/`",
+        "",
+        "Your filesystem is restricted to your working directory. All file paths should be",
+        "relative to this location. Do NOT use absolute paths.",
+        "",
+        "**⚠️ CRITICAL:** Before ANY git command or file operation, run `pwd` to verify your current",
+        "directory. If you've used `cd` to change directories, you MUST use paths relative to your",
+        "NEW location, not the working directory. See the PATH CONFUSION PREVENTION section in the",
+        "coder prompt for detailed examples.",
+    ]
+    if main_project_dir is not None:
+        git_c_note = (
+            "When running git add/commit for paths under `.auto-claude/` or outside your working "
+            "directory, use: `git -C \"{}\" add ...` / `git -C \"{}\" commit ...` to avoid "
+            '"path outside repository" errors.'
+        ).format(main_project_dir, main_project_dir)
+        env_lines.extend(
+            [
+                "",
+                f"**Main project root (for git):** `{main_project_dir}`",
+                git_c_note,
+                "",
+            ]
+        )
+    env_lines.extend(
+        [
+            "**Important Files:**",
+            f"- Spec: `{relative_spec}/spec.md`",
+            f"- Plan: `{relative_spec}/implementation_plan.json`",
+            f"- Progress: `{relative_spec}/build-progress.txt`",
+            f"- Context: `{relative_spec}/context.json`",
+            "",
+            "---",
+            "",
+            "",
+        ]
+    )
+    return "\n".join(env_lines)
 
 
 def generate_subtask_prompt(
@@ -85,6 +109,7 @@ def generate_subtask_prompt(
     phase: dict,
     attempt_count: int = 0,
     recovery_hints: list[str] | None = None,
+    main_project_dir: Path | None = None,
 ) -> str:
     """
     Generate a minimal, focused prompt for implementing a single subtask.
@@ -96,6 +121,7 @@ def generate_subtask_prompt(
         phase: The phase containing this subtask
         attempt_count: Number of previous attempts (for retry context)
         recovery_hints: Hints from previous failed attempts
+        main_project_dir: Main repo root when in worktree (for git -C in prompt)
 
     Returns:
         A focused prompt string (~100 lines instead of 900)
@@ -114,8 +140,10 @@ def generate_subtask_prompt(
     # Build the prompt
     sections = []
 
-    # Environment context first
-    sections.append(generate_environment_context(project_dir, spec_dir))
+    # Environment context first (include main project root when in worktree)
+    sections.append(
+        generate_environment_context(project_dir, spec_dir, main_project_dir)
+    )
 
     # Header
     sections.append(f"""# Subtask Implementation Task
@@ -212,9 +240,12 @@ Verify:""")
 2. **Read the files to modify** (if any) to understand current implementation
 3. **Implement the subtask** following the patterns exactly
 4. **Run verification** and fix any issues
-5. **Commit your changes:**
+5. **Stage (and commit unless batch mode):**
    ```bash
-   git add .
+   git add . ':!.auto-claude'
+   ```
+   If batch commit mode is NOT in effect, also run:
+   ```bash
    git commit -m "auto-claude: {subtask_id} - {description[:50]}"
    ```
 6. **Update the plan** - set this subtask's status to "completed" in implementation_plan.json
@@ -237,6 +268,17 @@ Before marking complete, verify:
 
     # Note: Linear updates are now handled by Python orchestrator via linear_updater.py
     # Agents no longer need to call Linear MCP tools directly
+
+    # Batch commit mode: runner commits once per phase; agent only stages at end of subtask
+    if os.environ.get("BATCH_COMMITS", "").strip().lower() in ("1", "true", "yes"):
+        sections.append("""
+## BATCH COMMIT MODE (ACTIVE)
+
+At the end of this subtask you MUST:
+1. Run only: `git add . ':!.auto-claude'`
+2. Do NOT run `git commit` — the runner will commit once per phase (planning / coding / validation).
+3. Update the plan and mark this subtask completed as usual.
+""")
 
     return "\n".join(sections)
 

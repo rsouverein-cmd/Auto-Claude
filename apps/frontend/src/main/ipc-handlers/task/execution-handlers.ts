@@ -644,6 +644,49 @@ export function registerTaskExecutionHandlers(
   );
 
   /**
+   * Check if a task is running via PID file (fallback for process tracking gaps)
+   * 
+   * This is a robustness measure for scenarios where process tracking is lost,
+   * such as during os.execv() transitions on Windows. The backend writes a
+   * .current_pid file that can be checked as a fallback.
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.TASK_CHECK_PID_FILE,
+    async (_, specDir: string): Promise<IPCResult<boolean>> => {
+      const pidFile = path.join(specDir, '.current_pid');
+
+      if (!existsSync(pidFile)) {
+        return { success: true, data: false };
+      }
+
+      try {
+        const content = readFileSync(pidFile, 'utf8').trim();
+        const pid = parseInt(content, 10);
+
+        if (isNaN(pid) || pid <= 0) {
+          return { success: true, data: false };
+        }
+
+        // Check if process with this PID is running
+        // process.kill(pid, 0) throws ESRCH if not running, EPERM if exists but no permission
+        try {
+          process.kill(pid, 0);
+          return { success: true, data: true };
+        } catch (err: unknown) {
+          // EPERM means process exists but we don't have permission (still running)
+          if (err && typeof err === 'object' && 'code' in err && err.code === 'EPERM') {
+            return { success: true, data: true };
+          }
+          // ESRCH or other error means process doesn't exist
+          return { success: true, data: false };
+        }
+      } catch {
+        return { success: true, data: false };
+      }
+    }
+  );
+
+  /**
    * Recover a stuck task (status says in_progress but no process running)
    */
   ipcMain.handle(

@@ -47,6 +47,8 @@ if sys.version_info < (3, 10):  # noqa: UP036
 import asyncio
 import io
 import os
+import platform
+import subprocess
 from pathlib import Path
 
 # Configure safe encoding on Windows BEFORE any imports that might print
@@ -93,11 +95,72 @@ if env_file.exists():
 elif dev_env_file.exists():
     load_dotenv(dev_env_file)
 
+from core.phase_event import emit_phase, ExecutionPhase
 from debug import debug, debug_error, debug_section, debug_success
 from phase_config import resolve_model_id
 from review import ReviewState
 from spec import SpecOrchestrator
 from ui import Icons, highlight, muted, print_section, print_status
+
+
+def _chain_to_run_py(run_cmd: list[str]) -> None:
+    """
+    Chain execution to run.py with platform-appropriate behavior.
+
+    On Windows: Use subprocess with stream forwarding (os.execv is broken)
+    On Unix: Use os.execv for efficient process replacement
+
+    Issue: On Windows, os.execv() spawns a background process and exits
+    immediately, breaking UI process tracking. This function uses subprocess
+    on Windows to maintain proper parent-child relationship.
+    """
+    if platform.system() == "Windows":
+        # Windows: os.execv() spawns background process and exits immediately,
+        # breaking UI process tracking. Use subprocess with stream forwarding.
+        proc = None
+        try:
+            debug("spec_runner", f"Starting subprocess: {' '.join(run_cmd)}")
+            proc = subprocess.Popen(
+                run_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,  # Line buffered for real-time output
+            )
+            debug("spec_runner", f"Subprocess started with PID: {proc.pid}")
+
+            # Forward output in real-time (required for UI log streaming)
+            while True:
+                line = proc.stdout.readline()
+                if not line and proc.poll() is not None:
+                    break
+                if line:
+                    print(line, end="", flush=True)
+
+            exit_code = proc.wait()
+            debug("spec_runner", f"Subprocess exited with code: {exit_code}")
+            # Propagate exit code
+            sys.exit(exit_code)
+
+        except KeyboardInterrupt:
+            # Propagate CTRL+C to child and exit with appropriate code
+            debug("spec_runner", "KeyboardInterrupt received, terminating subprocess")
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            sys.exit(130)  # Standard exit code for SIGINT
+        except Exception as e:
+            # Log any other exceptions for debugging
+            debug_error("spec_runner", f"Subprocess chain failed: {e}")
+            print(f"\nError starting build process: {e}", file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Unix: execv efficiently replaces the process image
+        # Signals and streams are automatically inherited
+        os.execv(sys.executable, run_cmd)
 
 
 def main():
@@ -358,8 +421,15 @@ Examples:
             print(f"  {muted('Running:')} {' '.join(run_cmd)}")
             print()
 
-            # Execute run.py - replace current process
-            os.execv(sys.executable, run_cmd)
+            # Signal phase transition to frontend before process chain
+            # Flush ensures event reaches UI before potential stream disruption
+            emit_phase(ExecutionPhase.CODING, "Transitioning to build phase...")
+            sys.stdout.flush()
+            sys.stderr.flush()
+
+            # Execute run.py - chain to build process
+            # Uses platform-appropriate method (subprocess on Windows, execv on Unix)
+            _chain_to_run_py(run_cmd)
 
         sys.exit(0)
 

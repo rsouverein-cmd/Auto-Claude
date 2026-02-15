@@ -8,6 +8,7 @@ Main autonomous agent loop that runs the coder agent to implement subtasks.
 import asyncio
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 from core.client import create_client
@@ -69,6 +70,41 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+# Env flag: one commit per runner phase (planning, coding, validation) instead of per subtask
+def _batch_commits_enabled() -> bool:
+    return os.environ.get("BATCH_COMMITS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _do_phase_commit(project_dir: Path, phase_name: str) -> bool:
+    """Create one git commit for the given runner phase. Returns True if commit succeeded."""
+    try:
+        add = subprocess.run(
+            ["git", "add", ".", ":!.auto-claude"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if add.returncode != 0:
+            logger.warning("Phase commit: git add failed: %s", add.stderr)
+            return False
+        commit = subprocess.run(
+            ["git", "commit", "-m", f"auto-claude: {phase_name} phase complete"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if commit.returncode != 0:
+            if "nothing to commit" in (commit.stderr or "").lower():
+                return True  # Nothing to commit is ok
+            logger.warning("Phase commit: git commit failed: %s", commit.stderr)
+            return False
+        return True
+    except Exception as e:
+        logger.warning("Phase commit failed: %s", e)
+        return False
+
 
 async def run_autonomous_agent(
     project_dir: Path,
@@ -77,6 +113,7 @@ async def run_autonomous_agent(
     max_iterations: int | None = None,
     verbose: bool = False,
     source_spec_dir: Path | None = None,
+    main_project_dir: Path | None = None,
 ) -> None:
     """
     Run the autonomous agent loop with automatic memory management.
@@ -85,13 +122,16 @@ async def run_autonomous_agent(
     This is decided by the agent itself based on the task complexity.
 
     Args:
-        project_dir: Root directory for the project
+        project_dir: Working directory for the agent (may be a worktree)
         spec_dir: Directory containing the spec (auto-claude/specs/001-name/)
         model: Claude model to use
         max_iterations: Maximum number of iterations (None for unlimited)
         verbose: Whether to show detailed output
         source_spec_dir: Original spec directory in main project (for syncing from worktree)
+        main_project_dir: Main repo root when agent runs in a worktree; use for git add/commit
+            to avoid "path outside repository" (e.g. .auto-claude/ when cwd is worktree)
     """
+    git_dir = main_project_dir.resolve() if main_project_dir is not None else project_dir.resolve()
     # Set environment variable for security hooks to find the correct project directory
     # This is needed because os.getcwd() may return the wrong directory in worktree mode
     os.environ[PROJECT_DIR_ENV_VAR] = str(project_dir.resolve())
@@ -252,9 +292,9 @@ async def run_autonomous_agent(
             else 1,
         )
 
-        # Capture state before session for post-processing
-        commit_before = get_latest_commit(project_dir)
-        commit_count_before = get_commit_count(project_dir)
+        # Capture state before session for post-processing (use main repo for git when in worktree)
+        commit_before = get_latest_commit(git_dir)
+        commit_count_before = get_commit_count(git_dir)
 
         # Get the phase-specific model and thinking level (respects task_metadata.json configuration)
         # first_run means we're in planning phase, otherwise coding phase
@@ -312,8 +352,18 @@ async def run_autonomous_agent(
                     task_logger.start_phase(
                         LogPhase.CODING, "Starting implementation..."
                     )
+                if _batch_commits_enabled():
+                    if _do_phase_commit(git_dir, "planning"):
+                        print_status("Batch commit: planning phase", "success")
+                    else:
+                        print_status("Batch commit: planning phase (skip or failed)", "info")
 
             if not next_subtask:
+                if _batch_commits_enabled():
+                    if _do_phase_commit(git_dir, "coding"):
+                        print_status("Batch commit: coding phase", "success")
+                    else:
+                        print_status("Batch commit: coding phase (skip or failed)", "info")
                 print("No pending subtasks found - build may be complete!")
                 break
 
@@ -329,7 +379,7 @@ async def run_autonomous_agent(
             plan = load_implementation_plan(spec_dir)
             phase = find_phase_for_subtask(plan, subtask_id) if plan else {}
 
-            # Generate focused, minimal prompt for this subtask
+            # Generate focused, minimal prompt for this subtask (pass main repo for worktree git -C)
             prompt = generate_subtask_prompt(
                 spec_dir=spec_dir,
                 project_dir=project_dir,
@@ -337,6 +387,7 @@ async def run_autonomous_agent(
                 phase=phase or {},
                 attempt_count=attempt_count,
                 recovery_hints=recovery_hints,
+                main_project_dir=main_project_dir,
             )
 
             # Load and append relevant file context
@@ -387,6 +438,7 @@ async def run_autonomous_agent(
                 linear_enabled=linear_is_enabled,
                 status_manager=status_manager,
                 source_spec_dir=source_spec_dir,
+                git_dir=git_dir,
             )
 
             # Check for stuck subtasks

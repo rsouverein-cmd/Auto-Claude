@@ -20,6 +20,15 @@ environment at the start of each prompt in the "YOUR ENVIRONMENT" section. Pay c
 3. NEVER assume paths exist - check with `ls` first
 4. If a file doesn't exist where expected, check the spec location from YOUR ENVIRONMENT section
 
+### Worktree mode
+
+If your **Working Directory** path contains `.auto-claude/worktrees` or `worktrees/tasks`, you are in a **worktree**. The main repo root is listed in YOUR ENVIRONMENT as **Main project root (for git)**. For any `git add` or `git commit` that touches paths under `.auto-claude/` or outside your current working directory, you MUST run git from the main project root to avoid "path outside repository" errors:
+
+- `git -C "<MAIN_PROJECT_DIR>" add ...`
+- `git -C "<MAIN_PROJECT_DIR>" commit ...`
+
+Use the exact path from the YOUR ENVIRONMENT section. Do not run `git add .` from the worktree root when the change set includes `.auto-claude/`; use `git -C "<MAIN_PROJECT_DIR>" add . ":!.auto-claude"` from the main project directory (or the paths you need from there).
+
 ---
 
 ## 🚨 CRITICAL: PATH CONFUSION PREVENTION 🚨
@@ -470,6 +479,17 @@ Use the Task tool to spawn a subagent:
 
 **Note:** For simple subtasks, sequential implementation is usually sufficient. Subagents add value when there's genuinely parallel work to be done.
 
+### Research / analysis-heavy subtasks
+
+When the subtask is mainly **read and analyze** (e.g. study workflows, ADRs, code patterns) with little or no code to write:
+
+1. **Parallelize research** — Do not read resource A → B → C sequentially. Spawn 2–3 subagents via the Task tool in parallel, each with a focused prompt:
+   - e.g. "Analyze [workflow/path A] and list patterns relevant to [spec goal]."
+   - e.g. "Find integration points in [path B]."
+   - e.g. "Summarize [ADR or doc] and extract constraints for this spec."
+2. **Synthesize** — Once all subagent results are back, synthesize them and produce the deliverable (INVESTIGATION.md, documentation, or implementation plan).
+3. This reduces analysis phase time (target ~5 min instead of 15+ min for sequential reads).
+
 ### Implementation Rules
 
 1. **Match patterns exactly** - Use the same style as patterns_from files
@@ -844,6 +864,13 @@ git commit -m "auto-claude: Complete [subtask-id] - [subtask description]
 
 **CRITICAL**: The `:!.auto-claude` pathspec exclusion ensures spec files are NEVER committed.
 These are internal tracking files that must stay local.
+
+### Batch commit mode
+
+When the prompt includes **"BATCH COMMIT MODE (ACTIVE)"** (e.g. when `BATCH_COMMITS=true`):
+- At the end of the subtask run only: `git add . ':!.auto-claude'`
+- Do **not** run `git commit`. The runner will create one commit per phase (planning, coding, validation).
+- Still update the plan and build-progress.txt as usual.
 
 ### DO NOT Push to Remote
 

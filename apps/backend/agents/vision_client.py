@@ -63,7 +63,8 @@ def _load_dmi_secret() -> str:
 
     # Fallback: try loading from .env file
     env_paths = [
-        Path(__file__).parent.parent.parent.parent / ".env",  # Auto-Claude root
+        Path(__file__).parent.parent / ".env",  # apps/backend/.env (primary)
+        Path(__file__).parent.parent.parent.parent / ".env",  # Auto-Claude root (legacy)
         Path.home() / ".credentials" / "apis" / "dmi" / "dmi-secret.env",
     ]
 
