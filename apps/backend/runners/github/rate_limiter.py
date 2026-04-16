@@ -31,7 +31,7 @@ Usage:
     limiter.track_ai_cost(
         input_tokens=1000,
         output_tokens=500,
-        model="claude-sonnet-4-20250514"
+        model="claude-sonnet-4-6"
     )
 
     # Manual rate check
@@ -159,14 +159,14 @@ class TokenBucket:
 
 
 # AI model pricing (per 1M tokens)
+# NOTE: Pricing values inherited from prior model generation.
+# Verify against Anthropic docs post-migration for claude-opus-4-7,
+# claude-sonnet-4-6, and claude-haiku-4-5. Adjust if upstream pricing differs.
 AI_PRICING = {
-    # Claude models (as of 2025)
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-    "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
-    "claude-sonnet-3-5-20241022": {"input": 3.00, "output": 15.00},
-    "claude-haiku-3-5-20241022": {"input": 0.80, "output": 4.00},
-    # Extended thinking models (higher output costs)
-    "claude-sonnet-4-20250514-thinking": {"input": 3.00, "output": 15.00},
+    # Claude 4.x canonical IDs (ENG-101 migration 2026-04-17)
+    "claude-opus-4-7": {"input": 15.00, "output": 75.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.00},
     # Default fallback
     "default": {"input": 3.00, "output": 15.00},
 }
@@ -665,7 +665,7 @@ if __name__ == "__main__":
             cost = limiter.track_ai_cost(
                 input_tokens=1000,
                 output_tokens=500,
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 operation_name="PR review",
             )
             print(f"   Cost: ${cost:.4f}")
