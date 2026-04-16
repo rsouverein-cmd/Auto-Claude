@@ -31,7 +31,7 @@ from phase_config import get_thinking_budget
 
 def create_simple_client(
     agent_type: str = "merge_resolver",
-    model: str = "claude-haiku-4-5-20251001",
+    model: str = "claude-haiku-4-5",
     system_prompt: str | None = None,
     cwd: Path | None = None,
     max_turns: int = 1,

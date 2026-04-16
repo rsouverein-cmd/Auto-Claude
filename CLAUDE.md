@@ -294,7 +294,7 @@ from core.client import create_client
 client = create_client(
     project_dir=project_dir,
     spec_dir=spec_dir,
-    model="claude-sonnet-4-5-20250929",
+    model="claude-sonnet-4-6",
     agent_type="coder",
     max_thinking_tokens=None  # or 5000/10000/16000
 )

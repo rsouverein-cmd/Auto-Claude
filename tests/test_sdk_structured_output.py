@@ -72,7 +72,7 @@ Provide a verdict (PASS or FAIL), reason, and score.
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(
-            model="claude-sonnet-4-5-20250929",
+            model="claude-sonnet-4-6",
             system_prompt="You are a code reviewer. Provide structured feedback.",
             allowed_tools=[],
             max_turns=2,  # Need 2 turns for structured output tool call
