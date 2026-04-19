@@ -9,6 +9,7 @@ Memory Integration:
 - Saves fix outcomes and learnings after session
 """
 
+import asyncio
 from pathlib import Path
 
 # Memory integration for cross-session learning
@@ -103,34 +104,40 @@ async def run_qa_fixer_session(
     prompt = load_qa_fixer_prompt()
     debug_detailed("qa_fixer", "Loaded QA fixer prompt", prompt_length=len(prompt))
 
-    # Retrieve memory context for fixer (past fixes, patterns, gotchas)
-    fixer_memory_context = await get_graphiti_context(
+    # Retrieve memory context for fixer in parallel (Graphiti + VISION).
+    # Both lookups are independent and each can take up to ~30s — running
+    # them concurrently halves wall-clock when both are configured.
+    fixer_query = "Fixing QA issues and implementing corrections"
+    graphiti_task = get_graphiti_context(
         spec_dir,
         project_dir,
-        {
-            "description": "Fixing QA issues and implementing corrections",
-            "id": f"qa_fixer_{fix_session}",
-        },
+        {"description": fixer_query, "id": f"qa_fixer_{fix_session}"},
     )
+    vision_task = (
+        get_vision_context_for_phase(fixer_query, phase="fixer")
+        if is_vision_enabled()
+        else asyncio.sleep(0, result=None)
+    )
+
+    fixer_memory_context, vision_context = await asyncio.gather(
+        graphiti_task, vision_task, return_exceptions=True
+    )
+
+    if isinstance(fixer_memory_context, Exception):
+        debug_error("qa_fixer", f"Graphiti context retrieval failed: {fixer_memory_context}")
+        fixer_memory_context = None
+    if isinstance(vision_context, Exception):
+        debug_error("qa_fixer", f"VISION context retrieval failed: {vision_context}")
+        vision_context = None
+
     if fixer_memory_context:
         prompt += "\n\n" + fixer_memory_context
         print("✓ Graphiti memory context loaded for QA fixer")
         debug_success("qa_fixer", "Graphiti memory context loaded for fixer")
-
-    # Retrieve VISION context for fixer (error patterns, fix solutions, ADRs)
-    # VISION provides cross-project error patterns and proven fix strategies
-    if is_vision_enabled():
-        try:
-            vision_context = await get_vision_context_for_phase(
-                "Fixing QA issues and implementing corrections",
-                phase="fixer",  # Error-focused namespace selection
-            )
-            if vision_context:
-                prompt += "\n\n" + vision_context
-                print("✓ VISION context loaded (error patterns, fixes)")
-                debug_success("qa_fixer", "VISION memory context loaded for fixer")
-        except Exception as e:
-            debug_error("qa_fixer", f"VISION context retrieval failed: {e}")
+    if vision_context:
+        prompt += "\n\n" + vision_context
+        print("✓ VISION context loaded (error patterns, fixes)")
+        debug_success("qa_fixer", "VISION memory context loaded for fixer")
 
     # Add session context - use full path so agent can find files
     prompt += f"\n\n---\n\n**Fix Session**: {fix_session}\n"

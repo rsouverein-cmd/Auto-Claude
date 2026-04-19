@@ -10,6 +10,7 @@ Memory Integration:
 - Saves QA findings (bugs, patterns, validation outcomes) after session
 """
 
+import asyncio
 from pathlib import Path
 
 # Memory integration for cross-session learning
@@ -89,34 +90,40 @@ async def run_qa_agent_session(
         project_dir=str(project_dir),
     )
 
-    # Retrieve memory context for QA (past patterns, gotchas, validation insights)
-    qa_memory_context = await get_graphiti_context(
+    # Retrieve memory context for QA in parallel (Graphiti + VISION).
+    # Both lookups are independent and each can take up to ~30s — running
+    # them concurrently halves wall-clock when both are configured.
+    qa_query = "QA validation and acceptance criteria review"
+    graphiti_task = get_graphiti_context(
         spec_dir,
         project_dir,
-        {
-            "description": "QA validation and acceptance criteria review",
-            "id": f"qa_reviewer_{qa_session}",
-        },
+        {"description": qa_query, "id": f"qa_reviewer_{qa_session}"},
     )
+    vision_task = (
+        get_vision_context_for_phase(qa_query, phase="qa")
+        if is_vision_enabled()
+        else asyncio.sleep(0, result=None)
+    )
+
+    qa_memory_context, vision_context = await asyncio.gather(
+        graphiti_task, vision_task, return_exceptions=True
+    )
+
+    if isinstance(qa_memory_context, Exception):
+        debug_error("qa_reviewer", f"Graphiti context retrieval failed: {qa_memory_context}")
+        qa_memory_context = None
+    if isinstance(vision_context, Exception):
+        debug_error("qa_reviewer", f"VISION context retrieval failed: {vision_context}")
+        vision_context = None
+
     if qa_memory_context:
         prompt += "\n\n" + qa_memory_context
         print("✓ Graphiti memory context loaded for QA reviewer")
         debug_success("qa_reviewer", "Graphiti memory context loaded for QA")
-
-    # Retrieve VISION context for QA (ADRs, security patterns, error learnings)
-    # VISION provides cross-project knowledge for better QA validation
-    if is_vision_enabled():
-        try:
-            vision_context = await get_vision_context_for_phase(
-                "QA validation and acceptance criteria review",
-                phase="qa",
-            )
-            if vision_context:
-                prompt += "\n\n" + vision_context
-                print("✓ VISION context loaded (ADRs, error patterns)")
-                debug_success("qa_reviewer", "VISION memory context loaded for QA")
-        except Exception as e:
-            debug_error("qa_reviewer", f"VISION context retrieval failed: {e}")
+    if vision_context:
+        prompt += "\n\n" + vision_context
+        print("✓ VISION context loaded (ADRs, error patterns)")
+        debug_success("qa_reviewer", "VISION memory context loaded for QA")
 
     # Add session context
     prompt += f"\n\n---\n\n**QA Session**: {qa_session}\n"
