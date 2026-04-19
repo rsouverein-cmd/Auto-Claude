@@ -6,12 +6,13 @@ Provides semantic search integration with the DMI VISION VectorDB.
 Implements ADR-021 RIGID compliant authentication.
 
 Usage:
-    from vision_client import get_vision_context
+    from vision_client import get_vision_context_for_phase
 
     # In async context
-    context = await get_vision_context("n8n webhook patterns")
+    context = await get_vision_context_for_phase("n8n webhook patterns", phase="coding")
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -22,7 +23,11 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Configuration
-VISION_GATEWAY_URL = "https://roger10four.app.n8n.cloud/webhook/vision-context"
+# Override via env-var for dev/staging swap (P3-1)
+VISION_GATEWAY_URL = os.environ.get(
+    "VISION_GATEWAY_URL",
+    "https://roger10four.app.n8n.cloud/webhook/vision-context",
+)
 DEFAULT_NAMESPACE = "learnings"
 DEFAULT_TOP_K = 5
 REQUEST_TIMEOUT = 30.0  # seconds
@@ -71,7 +76,8 @@ def _load_dmi_secret() -> str:
     for env_path in env_paths:
         if env_path.exists():
             try:
-                with open(env_path) as f:
+                # P3-2: explicit utf-8 encoding for Windows cross-platform safety
+                with open(env_path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if line.startswith("DMI_SECRET=") and not line.startswith("#"):
@@ -79,7 +85,7 @@ def _load_dmi_secret() -> str:
                             if secret:
                                 logger.debug(f"DMI_SECRET loaded from {env_path}")
                                 return secret
-            except Exception as e:
+            except OSError as e:
                 logger.warning(f"Failed to read {env_path}: {e}")
 
     logger.warning("DMI_SECRET not found - VISION client will operate without auth")
@@ -109,10 +115,8 @@ async def query_vision(
         top_k: Number of results to return
 
     Returns:
-        List of matching documents with scores
-
-    Raises:
-        httpx.HTTPError: On network/API errors
+        List of matching documents with scores. Returns empty list on
+        any error (fail-open — VISION is optional context enrichment).
     """
     if not _DMI_SECRET:
         logger.debug("VISION query skipped - no DMI_SECRET configured")
@@ -139,11 +143,11 @@ async def query_vision(
             response.raise_for_status()
 
             data = response.json()
-            
+
             # Handle n8n array response format: [{usage: {...}, result: {hits: [...]}}]
             if isinstance(data, list) and len(data) > 0:
                 data = data[0]
-            
+
             # Extract hits from Pinecone response structure
             matches = data.get("result", {}).get("hits", []) or data.get("matches", [])
 
@@ -162,9 +166,114 @@ async def query_vision(
         else:
             logger.warning(f"VISION query failed: {e.response.status_code}")
         return []
-    except Exception as e:
+    except (httpx.HTTPError, ValueError) as e:
+        # ValueError catches JSON decode errors; HTTPError catches
+        # connection/network issues not covered by the specific subclasses above.
         logger.warning(f"VISION query error: {e}")
         return []
+
+
+def _extract_match_fields(item: dict) -> tuple[str, str, float | None]:
+    """
+    Extract title, content and score from a VISION match item.
+
+    Handles divergent response shapes (Pinecone "fields" vs "metadata"
+    vs flat). Returns score as None when truly absent — never fabricates
+    `0` as a placeholder (LRN-2026-04-076: silent default sentinels are
+    analytics lies).
+    """
+    fields = item.get("fields", {})
+    metadata = item.get("metadata", {})
+    content = (
+        fields.get("text")
+        or metadata.get("content")
+        or item.get("content")
+        or item.get("text", "")
+    )
+    title = (
+        fields.get("title")
+        or metadata.get("title")
+        or item.get("title")
+        or item.get("_id", "")
+    )
+    raw_score = item.get("_score")
+    if raw_score is None:
+        raw_score = item.get("score")
+    score = raw_score if isinstance(raw_score, (int, float)) else None
+    return title, content, score
+
+
+def _format_vision_context(
+    all_results: dict[str, list[dict]],
+    header_extra: str = "",
+) -> str:
+    """
+    Format multi-namespace VISION results into agent-consumable Markdown.
+
+    Single source of truth for VISION context formatting — both the
+    legacy `get_vision_context()` and the phase-aware
+    `get_vision_context_for_phase()` route through here. Score `None`
+    is rendered as `"n/a"` instead of fabricating `0.00` (P2-2 fix).
+    """
+    sections = ["## VISION Memory Context\n"]
+    sections.append(f"_{header_extra}Retrieved from DMI knowledge base:_\n")
+
+    for namespace, results in all_results.items():
+        ns_title = namespace.replace("_", " ").title()
+        sections.append(f"### {ns_title}\n")
+
+        for item in results:
+            title, content, score = _extract_match_fields(item)
+            score_str = f"{score:.2f}" if score is not None else "n/a"
+
+            if title:
+                sections.append(f"- **{title}** (score: {score_str})")
+                if content:
+                    truncated = content[:300] + "..." if len(content) > 300 else content
+                    sections.append(f"  {truncated}")
+            elif content:
+                truncated = content[:400] + "..." if len(content) > 400 else content
+                sections.append(f"- {truncated} (score: {score_str})")
+
+            sections.append("")
+
+    return "\n".join(sections)
+
+
+async def _query_namespaces_parallel(
+    description: str,
+    namespaces: list[str],
+    top_k: int,
+) -> tuple[dict[str, list[dict]], list[str], list[str]]:
+    """
+    Query multiple namespaces in parallel via asyncio.gather.
+
+    P2-1 fix: replaces sequential namespace loop. For 5 namespaces with
+    30s timeout each, wall-clock drops from up-to-150s to ~30s in the
+    worst case.
+
+    Returns:
+        (results_per_namespace, successful_namespaces, empty_namespaces)
+    """
+    tasks = [query_vision(description, namespace=ns, top_k=top_k) for ns in namespaces]
+    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_results: dict[str, list[dict]] = {}
+    successful: list[str] = []
+    empty: list[str] = []
+
+    for ns, result in zip(namespaces, raw_results):
+        if isinstance(result, Exception):
+            logger.debug(f"Namespace {ns} query failed: {result}")
+            empty.append(ns)
+            continue
+        if result:
+            all_results[ns] = result
+            successful.append(ns)
+        else:
+            empty.append(ns)
+
+    return all_results, successful, empty
 
 
 async def get_vision_context(
@@ -175,7 +284,9 @@ async def get_vision_context(
     """
     Get formatted context from VISION for a subtask.
 
-    Queries multiple namespaces and formats results for agent consumption.
+    Generic (non-phase-aware) variant. Most call-sites should prefer
+    `get_vision_context_for_phase()` which selects namespaces based on
+    pipeline phase (ADR compliant).
 
     Args:
         subtask_description: Description of the current subtask
@@ -189,57 +300,15 @@ async def get_vision_context(
         return None
 
     namespaces = namespaces or ["learnings", "skills", "protocols"]
-    all_results: dict[str, list[dict]] = {}
-
-    # Query all namespaces
-    for ns in namespaces:
-        results = await query_vision(subtask_description, namespace=ns, top_k=top_k)
-        if results:
-            all_results[ns] = results
+    all_results, _, _ = await _query_namespaces_parallel(
+        subtask_description, namespaces, top_k
+    )
 
     if not all_results:
         logger.debug("No VISION results found")
         return None
 
-    # Format results
-    sections = ["## VISION Memory Context\n"]
-    sections.append("_Retrieved from DMI knowledge base:_\n")
-
-    for namespace, results in all_results.items():
-        ns_title = namespace.replace("_", " ").title()
-        sections.append(f"### {ns_title}\n")
-
-        for item in results:
-            # Handle different response formats (Pinecone fields vs metadata)
-            fields = item.get("fields", {})
-            metadata = item.get("metadata", {})
-            content = (
-                fields.get("text")
-                or metadata.get("content")
-                or item.get("content")
-                or item.get("text", "")
-            )
-            title = (
-                fields.get("title")
-                or metadata.get("title")
-                or item.get("title")
-                or item.get("_id", "")  # Use ID as fallback title
-            )
-            score = item.get("_score") or item.get("score", 0)
-
-            if title:
-                sections.append(f"- **{title}** (score: {score:.2f})")
-                if content:
-                    # Truncate long content
-                    truncated = content[:300] + "..." if len(content) > 300 else content
-                    sections.append(f"  {truncated}")
-            elif content:
-                truncated = content[:400] + "..." if len(content) > 400 else content
-                sections.append(f"- {truncated} (score: {score:.2f})")
-
-            sections.append("")
-
-    return "\n".join(sections)
+    return _format_vision_context(all_results)
 
 
 async def get_vision_context_for_phase(
@@ -250,98 +319,51 @@ async def get_vision_context_for_phase(
     """
     Get phase-appropriate VISION context with ADR compliance.
 
-    All phases include 'protocols' namespace to ensure ADR patterns are available.
-    This is the recommended function for phase-specific context retrieval.
+    All phases include 'protocols' namespace to ensure ADR patterns are
+    available. This is the recommended function for phase-specific
+    context retrieval.
 
     Args:
         description: Task/subtask description
-        phase: Auto-Claude phase (spec, planning, coding, qa, review, critique, deploy, fixer)
+        phase: Auto-Claude phase (spec, planning, coding, qa, review,
+               critique, deploy, fixer)
         top_k: Results per namespace
 
     Returns:
         Formatted context string or None if unavailable
     """
     if not is_vision_enabled():
-        logger.info(f"{VISION_LOG_PREFIX} Query SKIPPED | phase={phase} | reason=VISION_NOT_ENABLED")
+        logger.info(
+            f"{VISION_LOG_PREFIX} Query SKIPPED | phase={phase} | "
+            f"reason=VISION_NOT_ENABLED"
+        )
         return None
 
-    # Get phase-specific namespaces, with fallback to default
     namespaces = PHASE_NAMESPACES.get(phase, ["protocols", "learnings", "skills"])
 
-    logger.info(f"{VISION_LOG_PREFIX} Query START | phase={phase} | namespaces={namespaces}")
+    logger.info(
+        f"{VISION_LOG_PREFIX} Query START | phase={phase} | namespaces={namespaces}"
+    )
 
-    all_results: dict[str, list[dict]] = {}
-    successful_namespaces = []
-    empty_namespaces = []
-
-    # Query all namespaces with graceful handling for empty/unavailable namespaces
-    for ns in namespaces:
-        try:
-            results = await query_vision(description, namespace=ns, top_k=top_k)
-            if results:
-                all_results[ns] = results
-                successful_namespaces.append(ns)
-            else:
-                empty_namespaces.append(ns)
-        except Exception as e:
-            logger.debug(f"Namespace {ns} query failed: {e}")
-            empty_namespaces.append(ns)
-            continue  # Graceful skip for unavailable namespaces (e.g., 'workflows' if empty)
-
-    # Calculate total results
+    all_results, successful, empty = await _query_namespaces_parallel(
+        description, namespaces, top_k
+    )
     total_results = sum(len(r) for r in all_results.values())
 
     if not all_results:
         logger.info(
             f"{VISION_LOG_PREFIX} Query END | phase={phase} | "
             f"namespaces_queried={len(namespaces)} | results=0 | "
-            f"empty_namespaces={empty_namespaces}"
+            f"empty_namespaces={empty}"
         )
         return None
 
-    # Format results (reuse existing format logic)
-    sections = ["## VISION Memory Context\n"]
-    sections.append(f"_Phase: {phase} | Retrieved from DMI knowledge base:_\n")
-
-    for namespace, results in all_results.items():
-        ns_title = namespace.replace("_", " ").title()
-        sections.append(f"### {ns_title}\n")
-
-        for item in results:
-            # Handle different response formats (Pinecone fields vs metadata)
-            fields = item.get("fields", {})
-            metadata = item.get("metadata", {})
-            content = (
-                fields.get("text")
-                or metadata.get("content")
-                or item.get("content")
-                or item.get("text", "")
-            )
-            title = (
-                fields.get("title")
-                or metadata.get("title")
-                or item.get("title")
-                or item.get("_id", "")  # Use ID as fallback title
-            )
-            score = item.get("_score") or item.get("score", 0)
-
-            if title:
-                sections.append(f"- **{title}** (score: {score:.2f})")
-                if content:
-                    truncated = content[:300] + "..." if len(content) > 300 else content
-                    sections.append(f"  {truncated}")
-            elif content:
-                truncated = content[:400] + "..." if len(content) > 400 else content
-                sections.append(f"- {truncated} (score: {score:.2f})")
-
-            sections.append("")
-
-    context = "\n".join(sections)
+    context = _format_vision_context(all_results, header_extra=f"Phase: {phase} | ")
 
     logger.info(
         f"{VISION_LOG_PREFIX} Query END | phase={phase} | "
         f"namespaces_queried={len(namespaces)} | results={total_results} | "
-        f"context_chars={len(context)} | successful={successful_namespaces}"
+        f"context_chars={len(context)} | successful={successful}"
     )
 
     return context
