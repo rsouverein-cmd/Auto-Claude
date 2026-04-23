@@ -85,7 +85,7 @@
     "electron-updater": "^6.6.2",
     "i18next": "^25.7.3",
     "lucide-react": "^0.562.0",
-    "minimatch": "^10.1.1",
+    "minimatch": "^10.2.5",
     "motion": "^12.23.26",
     "proper-lockfile": "^4.1.2",
     "react": "^19.2.3",
@@ -96,7 +96,7 @@
     "remark-gfm": "^4.0.1",
     "semver": "^7.7.3",
     "tailwind-merge": "^3.4.0",
-    "uuid": "^13.0.0",
+    "uuid": "^14.0.0",
     "zod": "^4.2.1",
     "zustand": "^5.0.9"
   },
@@ -118,8 +118,8 @@
     "@vitejs/plugin-react": "^5.1.2",
     "autoprefixer": "^10.4.22",
     "cross-env": "^10.1.0",
-    "electron": "39.2.7",
-    "electron-builder": "^26.0.12",
+    "electron": "39.8.9",
+    "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react": "^7.37.5",
@@ -132,7 +132,7 @@
     "tailwindcss": "^4.1.17",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.50.1",
-    "vite": "^7.2.7",
+    "vite": "^7.3.2",
     "vitest": "^4.0.16"
   },
   "overrides": {
